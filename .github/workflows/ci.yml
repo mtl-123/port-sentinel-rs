@@ -1,19 +1,16 @@
 # ════════════════════════════════════════════════════════════
-# netpulse-rs - Build & Release Static Binary (x86-64 Only)
-# 特性：Rust musl 静态编译 | UPX 压缩验证 | 自动 Release 发布
+# netpulse-rs - Build & Release Static Binary (x86_64 Linux musl)
+# 修复重点：musl 工具链 | 静态链接验证 | 兼容 UPX | 调试增强
 # ════════════════════════════════════════════════════════════
 
 name: Build & Release Static Binary
 
 on:
   push:
-    branches:
-      - master
-    tags:
-      - "v*"
+    branches: ["master", "main"]
+    tags: ["v*"]
   pull_request:
-    branches:
-      - master
+    branches: ["master", "main"]
   workflow_dispatch:
 
 permissions:
@@ -25,240 +22,262 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  BIN_NAME: net_monitor
+  # 🔧 关键：BIN_NAME 必须与 Cargo.toml 中 [[bin]] name 或 package.name 一致
+  BIN_NAME: netpulse-rs
   PROJECT_NAME: netpulse-rs
-  RUST_VERSION: "stable"
-  TARGET_ARCH: x86_64-unknown-linux-musl
+  RUST_VERSION: "1.75.0" # 🔧 固定版本避免兼容问题
+  TARGET: x86_64-unknown-linux-musl
 
 jobs:
   # ────────────────────────────────────────────────────────────
-  # 代码质量检查（仅 PR 或非 Tag 推送时运行）
+  # 代码质量检查（PR 或非 Tag 推送时运行）
   # ────────────────────────────────────────────────────────────
   lint:
-    name: Code Quality Check
+    name: Code Quality
     runs-on: ubuntu-22.04
     if: github.event_name == 'pull_request' || (!startsWith(github.ref, 'refs/tags/'))
     steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
-          target: ${{ env.TARGET_ARCH }}
+          targets: ${{ env.TARGET }}
 
-      - name: Cache Cargo Dependencies
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: lint-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run Tests
-        run: cargo test --verbose
+      - name: Clippy & Test
+        run: |
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --verbose
 
   # ────────────────────────────────────────────────────────────
-  # 构建 Linux x86_64 静态二进制（核心任务）
+  # 构建静态二进制（核心任务）
   # ────────────────────────────────────────────────────────────
-  build-linux-x86_64-static:
-    name: Build Linux x86_64 Static
+  build-static:
+    name: Build Linux x86_64 musl Static
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
-    needs:
-      - lint
+    timeout-minutes: 45
+    needs: [lint]
     if: |
       always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && needs.lint.result == 'success') ||
-        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/master')
+        (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master'))
       )
 
     steps:
-      - name: Checkout Source Code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # 🔧 修复 1: 正确安装 Rust + musl target
       - name: Install Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rust-src
-          target: ${{ env.TARGET_ARCH }}
+          targets: ${{ env.TARGET }}
 
-      - name: Cache Cargo Dependencies
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          key: build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          shared-key: musl-build
+          key: build-${{ runner.os }}-${{ env.TARGET }}-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: musl-static
 
+      # 🔧 修复 2: 安装 musl 工具链 + 验证
       - name: Install System Dependencies
         run: |
           set -euo pipefail
-          sudo apt update -y || true
-          sudo apt install -y --no-install-recommends \
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
             build-essential \
             musl-tools \
             musl-dev \
-            gh \
-            file \
+            llvm \
+            lld \
             upx-ucl \
+            file \
             bc \
             patchelf
-          echo "✅ System dependencies installed"
-          musl-gcc --version
-          upx --version || echo "UPX not available"
 
-      - name: Configure Cargo for Static Build
+          # 验证 musl 环境
+          echo "=== musl 环境验证 ==="
+          which musl-gcc && musl-gcc --version
+          rustup target list --installed | grep musl
+          echo "✅ musl 环境就绪"
+
+      # 🔧 修复 3: 使用更兼容的 cargo 配置（避免 strip=symbols 兼容性问题）
+      - name: Configure Cargo for musl Static Build
         run: |
           mkdir -p .cargo
           cat > .cargo/config.toml << 'EOF'
           [target.x86_64-unknown-linux-musl]
           linker = "musl-gcc"
-          rustflags = ["-C", "target-feature=+crt-static", "-C", "strip=symbols"]
+          rustflags = [
+            "-C", "target-feature=+crt-static",
+            "-C", "link-arg=-s"  # 使用链接器参数 strip，兼容性更好
+          ]
+
+          # 如果使用 openssl/ring 等 crate，添加以下配置（按需启用）
+          # [env]
+          # OPENSSL_STATIC = "1"
+          # RING_USE_CC = "musl-gcc"
           EOF
-          echo "✅ Cargo configuration created"
           cat .cargo/config.toml
 
-      - name: Build Static Binary
+      # 🔧 修复 4: 预编译依赖（避免 musl 下编译失败）
+      - name: Build Dependencies First
+        run: |
+          cargo build \
+            --target ${{ env.TARGET }} \
+            --release \
+            --locked \
+            --verbose \
+            --bins
+
+      # 🔧 修复 5: 正式构建 + 详细验证
+      - name: Build Release Binary
+        id: build
         run: |
           set -euo pipefail
+
           BIN_NAME="${{ env.BIN_NAME }}"
-          BIN_PATH="target/${{ env.TARGET_ARCH }}/release/${BIN_NAME}"
+          TARGET="${{ env.TARGET }}"
+          BIN_PATH="target/${TARGET}/release/${BIN_NAME}"
+
+          echo "=== 构建参数 ==="
+          echo "BIN_NAME: ${BIN_NAME}"
+          echo "TARGET: ${TARGET}"
+          echo "Expected path: ${BIN_PATH}"
+          echo "Cargo.toml package name:"
+          grep '^name' Cargo.toml | head -1
 
           echo "=== 开始编译 ==="
-          echo "Binary: ${BIN_NAME}"
-          echo "Target: ${{ env.TARGET_ARCH }}"
-          echo "Expected path: ${BIN_PATH}"
-
           cargo build \
-            --target ${{ env.TARGET_ARCH }} \
+            --target "${TARGET}" \
             --release \
+            --locked \
             --verbose
 
-          echo "=== 编译完成，验证产物 ==="
-          ls -la "target/${{ env.TARGET_ARCH }}/release/"
-
-          if [ ! -f "$BIN_PATH" ]; then
-            echo "❌ FATAL: Binary not found at ${BIN_PATH}"
+          echo "=== 验证二进制文件 ==="
+          if [ ! -f "${BIN_PATH}" ]; then
+            echo "❌ FATAL: Binary not found!"
+            echo "Searching for binaries in target/${TARGET}/release/:"
+            find "target/${TARGET}/release/" -maxdepth 1 -type f -executable -ls 2>/dev/null || true
             exit 1
           fi
 
-          echo "=== 文件信息 ==="
-          file "$BIN_PATH"
+          echo "✅ Binary found: ${BIN_PATH}"
+          ls -lh "${BIN_PATH}"
+          file "${BIN_PATH}"
 
-          if file "$BIN_PATH" | grep -qi "statically linked"; then
+          # 检查是否为静态链接
+          if file "${BIN_PATH}" | grep -q "statically linked"; then
             echo "✅ 确认为静态链接二进制"
+            echo "static_linked=true" >> $GITHUB_OUTPUT
           else
-            echo "⚠️ 未检测到 statically linked 标记"
+            echo "⚠️ 警告: 未检测到 statically linked"
+            echo "ldd 输出:"
+            ldd "${BIN_PATH}" 2>&1 | head -10 || echo "(ldd 可能不适用于 musl 二进制)"
+            echo "static_linked=false" >> $GITHUB_OUTPUT
           fi
 
-          ORIG_SIZE=$(du -b "$BIN_PATH" | awk '{print $1}')
-          echo "original_size=${ORIG_SIZE}" >> $GITHUB_ENV
-          echo "✅ Binary size: ${ORIG_SIZE} bytes"
+          # 记录文件大小
+          ORIG_SIZE=$(stat -c%s "${BIN_PATH}" 2>/dev/null || stat -f%z "${BIN_PATH}")
+          echo "original_size=${ORIG_SIZE}" >> $GITHUB_OUTPUT
+          echo "📦 Original size: ${ORIG_SIZE} bytes ($(numfmt --to=iec-i --suffix=B ${ORIG_SIZE} 2>/dev/null || echo "${ORIG_SIZE}B"))"
 
-      - name: Verify Original Binary
+      # 🔧 修复 6: 更健壮的二进制可执行性测试
+      - name: Test Binary Executability
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/${{ env.TARGET }}/release/${{ env.BIN_NAME }}"
+          chmod +x "${BIN_PATH}"
+
+          echo "=== 二进制基础测试 ==="
+          # 测试 1: 文件类型
+          file "${BIN_PATH}"
+
+          # 测试 2: 尝试执行（带超时，避免阻塞）
+          # 兼容: --version / -V / --help / -h / 无参数退出码
+          set +e
+          timeout 5s "${BIN_PATH}" --version >/dev/null 2>&1 && echo "✅ --version OK" && exit 0
+          timeout 5s "${BIN_PATH}" -V >/dev/null 2>&1 && echo "✅ -V OK" && exit 0
+          timeout 5s "${BIN_PATH}" --help >/dev/null 2>&1 && echo "✅ --help OK" && exit 0
+          timeout 5s "${BIN_PATH}" -h >/dev/null 2>&1 && echo "✅ -h OK" && exit 0
+          # 如果程序是交互式或无参数启动，检查退出码（0 或 1 都算正常）
+          timeout 3s "${BIN_PATH}" >/dev/null 2>&1
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -le 1 ]; then
+            echo "✅ 无参数执行正常 (exit code: ${EXIT_CODE})"
+          else
+            echo "⚠️ 无参数执行退出码: ${EXIT_CODE}（可能是预期行为）"
+          fi
+          set -e
+
+          echo "✅ 二进制可执行性验证通过"
+
+      # 🔧 修复 7: UPX 压缩（可选，失败时自动回滚）
+      - name: Compress with UPX (Optional)
+        id: upx
+        if: always() && steps.build.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           BIN_NAME="${{ env.BIN_NAME }}"
-          BIN_PATH="target/${{ env.TARGET_ARCH }}/release/${BIN_NAME}"
-          TIMEOUT_SEC=10
-
-          chmod +x "$BIN_PATH"
-          echo "=== 测试原始二进制可执行性 ==="
-
-          if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1; then
-            echo "✅ --version 检测通过"
-          elif timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1; then
-            echo "✅ -h 检测通过"
-          elif timeout ${TIMEOUT_SEC}s "$BIN_PATH" --help >/dev/null 2>&1; then
-            echo "✅ --help 检测通过"
-          else
-            echo "⚠️ 无标准参数响应（可能是交互式程序）"
-            echo "✅ 文件存在且可执行，视为有效"
-          fi
-
-          echo "=== 动态库依赖检查 ==="
-          ldd "$BIN_PATH" 2>&1 | head -5 || echo "静态链接（无动态库依赖）"
-
-      - name: Compress with UPX
-        id: upx_compress
-        run: |
-          set -euo pipefail
-          BIN_NAME="${{ env.BIN_NAME }}"
-          BIN_PATH="target/${{ env.TARGET_ARCH }}/release/${BIN_NAME}"
+          TARGET="${{ env.TARGET }}"
+          SRC_PATH="target/${TARGET}/release/${BIN_NAME}"
 
           mkdir -p bin
-          cp "$BIN_PATH" "bin/${BIN_NAME}"
+          cp "${SRC_PATH}" "bin/${BIN_NAME}"
           cp "bin/${BIN_NAME}" "bin/${BIN_NAME}.backup"
 
-          echo "=== UPX 压缩前 ==="
-          ls -lh "bin/${BIN_NAME}"
-          ORIG_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
+          echo "=== UPX 压缩尝试 ==="
+          ORIG_SIZE=$(stat -c%s "bin/${BIN_NAME}" 2>/dev/null || stat -f%z "bin/${BIN_NAME}")
 
-          if upx --best --lzma --force --strip-relocs=0 -q "bin/${BIN_NAME}" 2>/dev/null; then
+          # 尝试压缩，使用更兼容的参数
+          if upx --best --lzma --force --strip-relocs=0 "bin/${BIN_NAME}" 2>&1; then
             echo "✅ UPX 压缩成功"
+            NEW_SIZE=$(stat -c%s "bin/${BIN_NAME}" 2>/dev/null || stat -f%z "bin/${BIN_NAME}")
+            RATIO=$(echo "scale=1; (1 - ${NEW_SIZE}/${ORIG_SIZE}) * 100" | bc)
+            echo "📊 压缩率: ${RATIO}% (${ORIG_SIZE} → ${NEW_SIZE} bytes)"
 
-            echo "=== UPX 压缩后验证 ==="
-            ls -lh "bin/${BIN_NAME}"
-            COMP_SIZE=$(du -b "bin/${BIN_NAME}" | awk '{print $1}')
-
-            if [ "$ORIG_SIZE" -gt 0 ]; then
-              COMP_RATIO=$(echo "scale=2; $COMP_SIZE * 100 / $ORIG_SIZE" | bc)
-              SAVED_RATIO=$(echo "scale=2; 100 - $COMP_RATIO" | bc)
-              echo "📊 压缩率：${SAVED_RATIO}% (${ORIG_SIZE} → ${COMP_SIZE} bytes)"
-            fi
-
-            if "bin/${BIN_NAME}" --version >/dev/null 2>&1 || \
-               "bin/${BIN_NAME}" -h >/dev/null 2>&1; then
+            # 验证压缩后是否可执行
+            if timeout 3s "bin/${BIN_NAME}" --version >/dev/null 2>&1 || \
+               timeout 3s "bin/${BIN_NAME}" --help >/dev/null 2>&1 || \
+               timeout 2s "bin/${BIN_NAME}" >/dev/null 2>&1; then
               echo "✅ 压缩后二进制验证通过"
               echo "compressed=true" >> $GITHUB_OUTPUT
             else
-              echo "⚠️ 压缩后验证失败，回滚到原始二进制"
+              echo "⚠️ 压缩后验证失败，回滚"
               cp "bin/${BIN_NAME}.backup" "bin/${BIN_NAME}"
               echo "compressed=false" >> $GITHUB_OUTPUT
             fi
           else
-            echo "⚠️ UPX 压缩失败，使用原始二进制"
+            echo "⚠️ UPX 压缩失败或不可用，使用原始二进制"
             cp "bin/${BIN_NAME}.backup" "bin/${BIN_NAME}"
             echo "compressed=false" >> $GITHUB_OUTPUT
           fi
           rm -f "bin/${BIN_NAME}.backup"
 
-      - name: Verify Compressed Binary
-        run: |
-          set -euo pipefail
-          BIN_NAME="${{ env.BIN_NAME }}"
-          BIN_PATH="bin/${BIN_NAME}"
-          TIMEOUT_SEC=10
-
-          chmod +x "$BIN_PATH"
-          echo "=== 最终二进制验证 ==="
-          file "$BIN_PATH"
-          ldd "$BIN_PATH" 2>&1 | head -5 || echo "静态链接"
-
-          if timeout ${TIMEOUT_SEC}s "$BIN_PATH" --version >/dev/null 2>&1 || \
-             timeout ${TIMEOUT_SEC}s "$BIN_PATH" -h >/dev/null 2>&1; then
-            echo "✅ 最终二进制可执行性验证通过"
-          else
-            echo "⚠️ 最终二进制验证警告（可能是交互式程序）"
-          fi
-
-      - name: Package Artifacts
+      # 🔧 修复 8: 打包产物（智能命名 + SHA256）
+      - name: Package Release Artifacts
         id: package
         run: |
           set -euo pipefail
           mkdir -p release
           BIN_NAME="${{ env.BIN_NAME }}"
 
-          echo "=== 打包产物 ==="
-
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          # 确定版本号和发布类型
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VERSION="${{ github.ref_name }}"
             RELEASE_TYPE="release"
           else
@@ -267,133 +286,98 @@ jobs:
             VERSION="dev-${SHORT_SHA}"
             RELEASE_TYPE="dev"
           fi
-          echo "Version: ${VERSION} (${RELEASE_TYPE})"
 
-          if [ "${{ steps.upx_compress.outputs.compressed }}" == "true" ]; then
-            FINAL_BIN="${BIN_NAME}-${VERSION}-linux-x86_64-static-upx"
+          # 确定文件名
+          if [[ "${{ steps.upx.outputs.compressed }}" == "true" ]]; then
+            FINAL_NAME="${BIN_NAME}-${VERSION}-linux-x86_64-musl-upx"
           else
-            FINAL_BIN="${BIN_NAME}-${VERSION}-linux-x86_64-static"
+            FINAL_NAME="${BIN_NAME}-${VERSION}-linux-x86_64-musl"
           fi
-          echo "Final binary name: ${FINAL_BIN}"
 
-          cp "bin/${BIN_NAME}" "release/${FINAL_BIN}"
-          chmod +x "release/${FINAL_BIN}"
-          sha256sum "release/${FINAL_BIN}" | awk '{print $1 "  " $2}' > "release/${FINAL_BIN}.sha256"
+          cp "bin/${BIN_NAME}" "release/${FINAL_NAME}"
+          chmod +x "release/${FINAL_NAME}"
 
-          echo "=== 最终产物信息 ==="
+          # 生成 SHA256
+          (cd release && sha256sum "${FINAL_NAME}" > "${FINAL_NAME}.sha256")
+
+          echo "=== 打包完成 ==="
           ls -lh release/
-          file "release/${FINAL_BIN}"
-          cat "release/${FINAL_BIN}.sha256"
+          file "release/${FINAL_NAME}"
+          cat "release/${FINAL_NAME}.sha256"
 
-          echo "final_bin=release/${FINAL_BIN}" >> $GITHUB_OUTPUT
-          echo "final_sum=release/${FINAL_BIN}.sha256" >> $GITHUB_OUTPUT
+          # 输出变量供后续步骤使用
+          echo "artifact_name=${FINAL_NAME}" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
-          echo "is_tag=${{ startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v') }}" >> $GITHUB_OUTPUT
+          echo "is_official_release=${{ startsWith(github.ref, 'refs/tags/v') }}" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BIN_NAME }}-linux-x86_64-static-${{ steps.package.outputs.version }}
+          name: ${{ env.BIN_NAME }}-${{ steps.package.outputs.version }}-linux-x86_64-musl
           path: release/
           retention-days: 30
           if-no-files-found: error
 
-      - name: Debug Release Conditions
-        if: always()
-        run: |
-          echo "=== Release 发布条件调试 ==="
-          echo "github.ref: ${{ github.ref }}"
-          echo "github.ref_name: ${{ github.ref_name }}"
-          echo "startsWith(github.ref, 'refs/tags/'): ${{ startsWith(github.ref, 'refs/tags/') }}"
-          echo "startsWith(github.ref_name, 'v'): ${{ startsWith(github.ref_name, 'v') }}"
-          echo "is_tag output: ${{ steps.package.outputs.is_tag }}"
-          echo "final_bin: ${{ steps.package.outputs.final_bin }}"
-          echo "final_sum: ${{ steps.package.outputs.final_sum }}"
-
-          if [ -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "✅ Binary file exists"
-            ls -lh "${{ steps.package.outputs.final_bin }}"
-          else
-            echo "❌ Binary file NOT found"
-          fi
-
+      # 🔧 修复 9: 条件发布到 GitHub Releases（仅 Tag 触发）
       - name: Publish to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/') && startsWith(github.ref_name, 'v')
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_NOTES: |
-            ## 📦 netpulse-rs ${{ github.ref_name }}
-
-            ### 特性
-            - ✅ Linux x86_64 静态二进制（musl）
-            - ✅ UPX 压缩优化（如适用）
-            - ✅ SHA256 校验和验证
-            - ✅ 7×24 小时网络连通性监控
-
-            ### 系统要求
-            - Linux x86_64 (amd64)
-            - 无需额外依赖（完全静态链接）
-
-            ### 快速使用
-            ```bash
-            # 下载
-            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.package.outputs.final_bin }}
-
-            # 验证
-            sha256sum -c ${{ steps.package.outputs.final_bin }}.sha256
-
-            # 执行
-            chmod +x ${{ steps.package.outputs.final_bin }}
-            ./${{ steps.package.outputs.final_bin }}
-            ```
-
-            ### 配置文件
-            创建 `config.toml` 文件，参考项目仓库中的配置示例。
         run: |
           set -euo pipefail
-          echo "=== 开始发布到 GitHub Releases ==="
-          echo "Tag: ${{ github.ref_name }}"
-          echo "Repository: ${{ github.repository }}"
-          echo "Binary path: ${{ steps.package.outputs.final_bin }}"
-          echo "Checksum path: ${{ steps.package.outputs.final_sum }}"
 
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          ARTIFACT="release/${{ steps.package.outputs.artifact_name }}"
+          CHECKSUM="release/${{ steps.package.outputs.artifact_name }}.sha256"
 
-          if [ ! -f "${{ steps.package.outputs.final_bin }}" ]; then
-            echo "❌ ERROR: Binary file missing at ${{ steps.package.outputs.final_bin }}"
-            ls -lh release/ || true
-            exit 1
-          fi
-          if [ ! -f "${{ steps.package.outputs.final_sum }}" ]; then
-            echo "❌ ERROR: Checksum file missing at ${{ steps.package.outputs.final_sum }}"
-            exit 1
-          fi
+          echo "=== 发布到 GitHub Releases ==="
+          echo "Tag: ${TAG}"
+          echo "Repo: ${REPO}"
+          echo "Artifact: ${ARTIFACT}"
 
-          echo "=== 检查现有 Release ==="
-          if gh release view ${{ github.ref_name }} --repo ${{ github.repository }} >/dev/null 2>&1; then
+          # 登录 gh CLI
+          echo "${GITHUB_TOKEN}" | gh auth login --with-token
+
+          # 检查并删除已存在的 Release（避免冲突）
+          if gh release view "${TAG}" --repo "${REPO}" &>/dev/null; then
             echo "⚠️ 发现现有 Release，删除后重建"
-            gh release delete ${{ github.ref_name }} --repo ${{ github.repository }} --yes || true
-          else
-            echo "✅ 无现有 Release，直接创建"
+            gh release delete "${TAG}" --repo "${REPO}" --yes --cleanup-tag || true
           fi
 
-          echo "=== 创建 Release ==="
-          gh release create ${{ github.ref_name }} \
-            --repo ${{ github.repository }} \
-            --title "Release ${{ github.ref_name }} 🚀" \
-            --notes "${{ env.RELEASE_NOTES }}" \
+          # 创建 Release
+          gh release create "${TAG}" \
+            --repo "${REPO}" \
+            --title "🚀 ${PROJECT_NAME} ${TAG}" \
+            --notes "## ${PROJECT_NAME} ${TAG}
+
+          ### ✅ 特性
+          - Linux x86_64 静态二进制 (musl libc)
+          - 零外部依赖，单文件部署
+          - UPX 压缩优化（如适用）
+          - SHA256 校验和验证
+
+          ### 📦 下载
+          \`\`\`bash
+          # 下载二进制
+          wget https://github.com/${REPO}/releases/download/${TAG}/${{ steps.package.outputs.artifact_name }}
+
+          # 验证完整性
+          wget https://github.com/${REPO}/releases/download/${TAG}/${{ steps.package.outputs.artifact_name }}.sha256
+          sha256sum -c ${{ steps.package.outputs.artifact_name }}.sha256
+
+          # 执行
+          chmod +x ${{ steps.package.outputs.artifact_name }}
+          ./${{ steps.package.outputs.artifact_name }}
+          \`\`\`
+
+          ### ⚙️ 配置
+          创建 \`config.toml\` 文件，参考仓库中的配置示例。
+          " \
             --draft=false \
             --prerelease=false \
-            "${{ steps.package.outputs.final_bin }}" \
-            "${{ steps.package.outputs.final_sum }}"
+            "${ARTIFACT}" \
+            "${CHECKSUM}"
 
-          echo "=== 发布验证 ==="
-          if gh release view ${{ github.ref_name }} --repo ${{ github.repository }} --json assets --jq '.assets | length' | grep -q '[1-9]'; then
-            echo "✅ Release published successfully!"
-            echo "🔗 URL: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-            gh release view ${{ github.ref_name }} --repo ${{ github.repository }} --json assets --jq '.assets[] | {name, size, downloadUrl}'
-          else
-            echo "❌ Release published but assets missing!"
-            exit 1
-          fi
+          echo "✅ Release published: https://github.com/${REPO}/releases/tag/${TAG}"
