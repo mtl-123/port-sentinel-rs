@@ -1,0 +1,26 @@
+[package]
+name = "port-sentinel-rs"
+version = "2.2.6"
+edition = "2021"
+description = "Port Sentinel - High Performance Async TCP Port Connectivity Monitoring System"
+authors = ["MTL"]
+license = "MIT"
+repository = "https://github.com/mtl-123/port-sentinel-rs"
+keywords = ["monitoring", "tcp", "port", "network", "alert"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+tokio = { version = "1", features = ["full", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+chrono = { version = "0.4", features = ["clock"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1

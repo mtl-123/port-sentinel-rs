@@ -1,0 +1,29 @@
+services:
+  port-sentinel-rs:
+    container_name: port-sentinel-rs
+    build: .
+    restart: unless-stopped
+
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ./logs:/app/logs
+
+    environment:
+      - TZ=Asia/Shanghai
+      # 🔹 禁用 Rust 输出缓冲
+      - RUST_LOG=info
+      - RUST_BACKTRACE=0
+
+    # 🔹 使用 stdbuf 禁用缓冲 + tee 双输出
+    command: >
+      sh -c "
+        mkdir -p /app/logs &&
+        chmod 777 /app/logs &&
+        stdbuf -oL -eL ./port-sentinel-rs 2>&1 | tee -a /app/logs/port-sentinel.log
+      "
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"

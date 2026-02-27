@@ -1,0 +1,313 @@
+# ════════════════════════════════════════════════════════════
+# 网络连通性监控系统配置 v2.1
+# 说明: 复制 [[device]] 块即可添加新设备，无需修改代码
+# ════════════════════════════════════════════════════════════
+
+# ── 全局设置 ────────────────────────────────────────────────
+[settings]
+# 检测轮询间隔（秒）
+interval = 15
+# 单次 TCP 连接超时（秒）
+timeout = 3
+# 同一设备告警冷却时间（秒），避免刷屏
+alert_cooldown = 300
+webhook = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=19bacb0b-b4f1-44ae-8156-f7dc26ea0dfd"
+# 日志级别: debug | info | warn | error
+log_level = "info"
+# 最大并发连接数（根据服务器性能调整）
+max_concurrent_connections = 100
+
+# ── 设备监控列表（扁平结构，添加设备只需复制 [[device]]）───
+
+# ======================  Redis服务  ======================
+# 【数据库组】
+[[device]]
+id = "redis-master-01"
+name = "Redis 主节点"
+group = "database"
+priority = "critical"
+ips = [
+  "192.168.1.133",
+  "192.168.1.128"
+]
+os = "linux"
+location = "机房/机柜/机架"
+# 检测项: port=端口, name=显示名称(可选)
+checks = [{ port = 6388, name = "Redis服务" }]
+
+
+# ======================  货架服务器  ======================
+
+[[device]]
+id = "shelf-srv-01"
+name = "货架服务器 01"
+group = "physical"
+priority = "medium"
+ips = [
+  "192.168.1.240",
+  "192.168.1.120",
+  "192.168.1.177",
+  "192.168.1.2",
+  "192.168.1.149",
+  "192.168.1.89"
+]
+os = "Linux"
+location = "货架/A区/01"
+checks = [
+  { port = 22, name = "SSH" },
+  { port = 50022, name = "备用SSH" },
+]
+
+
+[[device]]
+id = "shelf-srv-01"
+name = "货架服务器 01"
+group = "physical"
+priority = "medium"
+ips = [
+  "192.168.1.150",
+  "192.168.1.153",
+  "192.168.1.157",
+  "192.168.1.20",
+  "192.168.1.37",
+  "192.168.1.46",
+  "192.168.1.70",
+  "192.168.1.8",
+  "192.168.1.88"
+]
+os = "Windows"
+location = "货架/A区/01"
+checks = [
+  { port = 3389, name = "windows" },
+]
+
+# ======================  机柜服务器  ======================
+[[device]]
+id = "shelf-srv-03"
+name = "机柜服务器"
+group = "physical"
+priority = "medium"
+ips = [
+  "192.168.1.122",
+  "192.168.1.124",
+  "192.168.1.125",
+  "192.168.1.129",
+  "192.168.1.135",
+  "192.168.1.140",
+  "192.168.1.151",
+  "192.168.1.155",
+  "192.168.1.25",
+  "192.168.1.35"
+]
+os = "windows"
+location = "机柜"
+checks = [
+  { port = 3389, name = "RDP" },
+]
+
+
+[[device]]
+id = "shelf-srv-03"
+name = "机柜服务器"
+group = "physical"
+priority = "medium"
+ips = [
+  "192.168.1.123",
+  "192.168.1.149",
+  "192.168.1.158",
+  "192.168.1.180"
+]
+
+os = "Linux"
+location = "机柜"
+checks = [
+  { port = 50022, name = "SSH" },
+  { port = 22, name = "SSH" }
+]
+
+# ======================  PVE-虚拟化母机  ======================
+
+[[device]]
+id = "shelf-srv-01"
+name = "虚拟化母机"
+group = "physical"
+priority = "medium"
+ips = [
+  "192.168.1.115",
+  "192.168.1.190",
+  "192.168.1.137"
+]
+os = "PVE"
+location = "货架/A区/01"
+checks = [
+  { port = 50022, name = "Linux" },
+]
+
+# ======================  PVE-190-虚拟机  ======================
+
+[[device]]
+id = "vm-app-01"
+name = "PVE-190"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.10",
+  "192.168.1.134",
+  "192.168.1.142",
+  "192.168.1.143",
+  "192.168.1.144",
+  "192.168.1.47"
+]
+os = "linux"
+location = "PVE-190"
+checks = [
+  { port = 22, name = "SSH" },
+  { port = 80, name = "HTTP" }
+]
+
+[[device]]
+id = "vm-app-01"
+name = "PVE-190"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.131",
+  "192.168.1.132",
+  "192.168.1.162",
+  "192.168.1.165",
+  "192.168.1.173",
+  "192.168.1.174",
+  "192.168.1.18",
+  "192.168.1.19",
+  "192.168.1.33",
+  "192.168.1.44",
+  "192.168.1.48",
+  "192.168.1.9"
+]
+os = "Windows"
+location = "PVE-190"
+checks = [
+  { port = 3389, name = "RDP" },
+]
+
+# ======================  PVE-115-虚拟机  ======================
+
+[[device]]
+id = "vm-app-01"
+name = "PVE-115"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.117",
+  "192.168.1.118",
+  "192.168.1.119",
+  "192.168.1.36",
+  "192.168.1.7"
+]
+os = "Windows"
+location = "PVE"
+checks = [
+  { port = 3389, name = "RDP" },
+]
+
+[[device]]
+id = "vm-app-01"
+name = "PVE-115"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.100",
+  "192.168.1.116",
+  "192.168.1.128",
+  "192.168.1.145",
+  "192.168.1.22",
+  "192.168.1.86"
+]
+os = "Linux"
+location = "PVE-115"
+checks = [
+  { port = 50022, name = "SSH" },
+]
+
+# ======================  总线与算法  ======================
+
+[[device]]
+id = "vm-app-02"
+name = "总线Web服务"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.2",
+  "192.168.1.86",
+  "192.168.1.240"
+  ]
+os = "linux"
+location = "两台物理机,1台虚拟机86"
+checks = [
+  { port = 80, name = "Web" }
+]
+
+[[device]]
+id = "vm-app-02"
+name = "算法服务"
+group = "virtual"
+priority = "medium"
+ips = [
+  "192.168.1.2",
+  "192.168.1.86",
+  "192.168.1.240"
+  ]
+os = "linux"
+location = "两台物理机,1台虚拟机86"
+checks = [
+  { port = 9999, name = "algo" },
+]
+
+
+
+# ======================  NAS存储  ======================
+
+[[device]]
+id = "nas-180"
+name = "主 NAS 存储"
+group = "storage"
+priority = "high"
+ips = [
+  "192.168.1.180"
+]
+os = "linux"
+location = "存储机房"
+checks = [{ port = 15001, name = "管理端口" }]
+
+# ======================  网络设备  ======================
+
+[[device]]
+id = "core-switch-01"
+name = "核心交换机"
+group = "network"
+priority = "critical"
+ips = [
+  "192.168.8.1",
+  "192.168.8.4"
+]
+os = "network"
+location = "机房1号机柜"
+checks = [
+  { port = 80, name = "HTTP" },
+  { port = 443, name = "HTTPS" }
+]
+
+# ======================  深信服防火墙  ======================
+
+[[device]]
+id = "firewall-01"
+name = "深信服防火墙"
+group = "network"
+priority = "critical"
+ips = ["192.168.8.2"]
+os = "network"
+location = "S24 机柜"
+checks = [
+  { port = 443, name = "HTTPS" },
+  { port = 80, name = "HTTP" }
+]
